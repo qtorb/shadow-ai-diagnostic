@@ -52,7 +52,12 @@ async def analyze(request: AnalyzeRequest):
 
 
 # Serve React frontend build (for production / Railway)
-frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+# First try: frontend_dist/ inside backend (Railway deploy)
+# Fallback: ../frontend/dist (local dev)
+_here = os.path.dirname(__file__)
+frontend_dist = os.path.join(_here, "frontend_dist")
+if not os.path.isdir(frontend_dist):
+    frontend_dist = os.path.join(_here, "..", "frontend", "dist")
 if os.path.isdir(frontend_dist):
     app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="static")
 
