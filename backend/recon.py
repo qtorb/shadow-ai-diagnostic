@@ -488,7 +488,10 @@ Conecta los hallazgos con las implicaciones concretas de Shadow AI para esta org
         )
         return response.content[0].text
     except Exception as e:
-        return f"Error generando narrativa: {str(e)}"
+        error_type = type(e).__name__
+        error_detail = str(e)
+        print(f"[narrative error] {error_type}: {error_detail}")
+        return f"Error generando narrativa: [{error_type}] {error_detail}"
 
 
 # ─── Main orchestrator ────────────────────────────────────────────────────────
