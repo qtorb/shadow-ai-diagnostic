@@ -458,8 +458,8 @@ async def generate_narrative(results: dict) -> str:
     if not ANTHROPIC_API_KEY:
         return "API key de Anthropic no configurada."
     try:
-        from anthropic import Anthropic
-        client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        import anthropic
+        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         score = results["score"]
         detected_ai = results["ai_detection"]["detected"]
         critical = [f["title"] for f in score["findings"] if f.get("severity") == "critical"]
@@ -477,8 +477,8 @@ Escribe un diagnóstico técnico de 2-3 párrafos cortos para el Shadow AI Diagn
 Tono: analítico, directo, sin grandilocuencia. En castellano. Sin bullet points ni headers.
 Conecta los hallazgos con las implicaciones concretas de Shadow AI para esta organización."""
 
-        response = client.messages.create(
-            model="claude-opus-4-5",
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
             max_tokens=600,
             system=(
                 "Eres un analista de ciberseguridad especializado en Shadow AI y riesgos de LLMs en organizaciones. "
