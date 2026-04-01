@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
 TIMEOUT = 12
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -501,9 +501,8 @@ Conecta los hallazgos con las implicaciones concretas de Shadow AI para esta org
             return f"Error generando narrativa: HTTP {resp.status_code} — {resp.text[:200]}"
     except Exception as e:
         error_type = type(e).__name__
-        error_detail = str(e)
-        print(f"[narrative error] {error_type}: {error_detail}")
-        return f"Error generando narrativa: [{error_type}] {error_detail}"
+        print(f"[narrative error] {error_type}: {str(e)}")
+        return f"El diagnóstico narrativo no está disponible en este momento."
 
 
 # ─── Main orchestrator ────────────────────────────────────────────────────────
