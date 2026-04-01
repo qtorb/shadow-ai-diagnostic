@@ -458,8 +458,6 @@ async def generate_narrative(results: dict) -> str:
     if not ANTHROPIC_API_KEY:
         return "API key de Anthropic no configurada."
     try:
-        import anthropic
-        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         score = results["score"]
         detected_ai = results["ai_detection"]["detected"]
         critical = [f["title"] for f in score["findings"] if f.get("severity") == "critical"]
@@ -477,16 +475,30 @@ Escribe un diagnóstico técnico de 2-3 párrafos cortos para el Shadow AI Diagn
 Tono: analítico, directo, sin grandilocuencia. En castellano. Sin bullet points ni headers.
 Conecta los hallazgos con las implicaciones concretas de Shadow AI para esta organización."""
 
-        response = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=600,
-            system=(
-                "Eres un analista de ciberseguridad especializado en Shadow AI y riesgos de LLMs en organizaciones. "
-                "Escribes diagnósticos técnicos rigurosos, directos y sin grandilocuencia. Sin moraleja."
-            ),
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.content[0].text
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 600,
+                    "system": (
+                        "Eres un analista de ciberseguridad especializado en Shadow AI y riesgos de LLMs "
+                        "en organizaciones. Escribes diagnósticos técnicos rigurosos, directos y sin "
+                        "grandilocuencia. Sin moraleja."
+                    ),
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+        if resp.status_code == 200:
+            return resp.json()["content"][0]["text"]
+        else:
+            print(f"[narrative error] HTTP {resp.status_code}: {resp.text[:300]}")
+            return f"Error generando narrativa: HTTP {resp.status_code} — {resp.text[:200]}"
     except Exception as e:
         error_type = type(e).__name__
         error_detail = str(e)
