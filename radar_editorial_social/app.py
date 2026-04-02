@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime
 
+import feedparser
 import streamlit as st
 
 from db import (
@@ -19,6 +20,7 @@ from db import (
     get_topic_map,
     get_topics,
     get_weekly_saved_signals,
+    signal_exists,
     init_db,
     topic_count,
     update_signal_status,
@@ -27,6 +29,11 @@ from db import (
 MAX_TOPICS = 3
 MAX_SUBTOPICS_PER_TOPIC = 3
 STATUSES = ["guardada", "descartada", "idea"]
+RSS_FEEDS_EXAMPLE = [
+    "https://blog.streamlit.io/rss/",
+    "https://openai.com/news/rss.xml",
+    "https://www.theverge.com/rss/index.xml",
+]
 
 
 def setup_page() -> None:
@@ -133,7 +140,7 @@ def render_topics_screen() -> None:
 
 def render_radar_screen() -> None:
     st.header("2) Radar")
-    st.write("Carga señales manuales y clasifícalas rápidamente.")
+    st.write("Carga señales manuales o desde RSS y clasifícalas rápidamente.")
 
     topic_map = get_topic_map()
     topic_options = {"(Sin tema)": None}
@@ -151,14 +158,72 @@ def render_radar_screen() -> None:
             if not title.strip():
                 st.warning("El título es obligatorio.")
             else:
-                create_signal(topic_options[selected_topic_name], title, source, notes)
-                st.success("Señal guardada en Radar.")
-                st.rerun()
+                was_created = create_signal(topic_options[selected_topic_name], title, source, notes, origin="web/rss")
+                if was_created:
+                    st.success("Señal guardada en Radar.")
+                    st.rerun()
+                else:
+                    st.warning("Señal duplicada detectada (mismo título y fuente).")
+
+    st.subheader("Ingestión básica desde RSS")
+    with st.form("rss_ingest_form", clear_on_submit=False):
+        selected_topic_name_rss = st.selectbox("Tema para señales RSS", list(topic_options.keys()), key="rss_topic")
+        rss_url = st.text_input("URL del feed RSS")
+        max_items = st.slider("Máximo de entradas a importar", min_value=1, max_value=20, value=5)
+        submitted_rss = st.form_submit_button("Importar RSS")
+
+        if submitted_rss:
+            if not rss_url.strip():
+                st.warning("Debes indicar una URL RSS.")
+            else:
+                parsed_feed = feedparser.parse(rss_url.strip())
+                if parsed_feed.bozo:
+                    st.error("No se pudo leer el feed RSS. Revisa la URL.")
+                else:
+                    created_count = 0
+                    duplicate_count = 0
+                    entries = parsed_feed.entries[:max_items]
+                    for entry in entries:
+                        entry_title = getattr(entry, "title", "").strip()
+                        entry_link = getattr(entry, "link", "").strip()
+                        entry_summary = getattr(entry, "summary", "").strip()
+                        if not entry_title:
+                            continue
+
+                        if signal_exists(entry_title, entry_link):
+                            duplicate_count += 1
+                            continue
+
+                        was_created = create_signal(
+                            topic_options[selected_topic_name_rss],
+                            entry_title,
+                            entry_link,
+                            entry_summary,
+                            origin="web/rss",
+                        )
+                        if was_created:
+                            created_count += 1
+                        else:
+                            duplicate_count += 1
+
+                    st.success(f"Importación completada. Nuevas: {created_count} | Duplicadas: {duplicate_count}")
+                    st.rerun()
+
+    with st.expander("Feeds RSS de ejemplo"):
+        for feed_url in RSS_FEEDS_EXAMPLE:
+            st.code(feed_url)
 
     st.divider()
     st.subheader("Señales en Radar")
 
-    signals = get_signals()
+    filter_col_1, filter_col_2 = st.columns(2)
+    with filter_col_1:
+        filter_topic_name = st.selectbox("Filtrar por tema", list(topic_options.keys()), key="radar_filter_topic")
+    with filter_col_2:
+        filter_status = st.selectbox("Filtrar por estado", ["todos"] + STATUSES, key="radar_filter_status")
+
+    selected_topic_id = topic_options[filter_topic_name]
+    signals = get_signals(topic_id=selected_topic_id, status=filter_status)
     if not signals:
         st.info("Aún no hay señales cargadas.")
         return
@@ -170,7 +235,17 @@ def render_radar_screen() -> None:
 
         with st.container(border=True):
             st.markdown(f"**{signal['title']}**")
-            st.caption(f"Tema: {topic_name} | Fuente: {signal['source'] or 'N/A'} | Fecha: {created_at}")
+            st.caption(
+                " | ".join(
+                    [
+                        f"Tema: {topic_name}",
+                        f"Origen: {signal['origin']}",
+                        f"Fuente: {signal['source'] or 'N/A'}",
+                        f"Score: {signal['relevance_score']}",
+                        f"Fecha: {created_at}",
+                    ]
+                )
+            )
             if signal["notes"]:
                 st.write(signal["notes"])
 

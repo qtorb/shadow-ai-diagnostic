@@ -13,6 +13,10 @@ Aplicación local (un solo ordenador) hecha con **Python + Streamlit + SQLite**.
 - Hasta 3 subtemas por tema.
 - Exclusiones por tema.
 - Carga manual de señales.
+- Ingestión básica desde RSS (URL de feed + límite de entradas).
+- Evita duplicados simples de señales (mismo título + misma fuente).
+- Score inicial de relevancia (0-100) al guardar cada señal.
+- Filtros básicos en Radar por tema y estado.
 - Estados por señal: `guardada`, `descartada`, `idea`.
 - Briefing semanal simple desde señales guardadas (últimos 7 días).
 
@@ -82,6 +86,25 @@ streamlit run app.py
    ```
 
 6. Abrir en navegador la URL que muestra Streamlit (normalmente `http://localhost:8501`).
+
+## Uso rápido de RSS
+
+1. Entra en la pantalla **Radar**.
+2. En la sección **Ingestión básica desde RSS**:
+   - elige un tema (opcional),
+   - pega la URL del feed,
+   - define cuántas entradas importar.
+3. Pulsa **Importar RSS**.
+4. Las señales nuevas se guardan en SQLite con:
+   - `origin = web/rss`,
+   - estado inicial `idea`,
+   - score inicial de relevancia.
+
+## Feeds RSS de ejemplo usados
+
+- https://blog.streamlit.io/rss/
+- https://openai.com/news/rss.xml
+- https://www.theverge.com/rss/index.xml
 
 ## Notas
 

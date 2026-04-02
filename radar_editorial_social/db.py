@@ -24,6 +24,16 @@ def init_db() -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     with get_connection() as conn:
         conn.executescript(schema)
+        _ensure_signal_columns(conn)
+
+
+def _ensure_signal_columns(conn: sqlite3.Connection) -> None:
+    """Aplica migraciones simples para instalaciones previas del MVP."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
+    if "origin" not in columns:
+        conn.execute("ALTER TABLE signals ADD COLUMN origin TEXT NOT NULL DEFAULT 'web/rss'")
+    if "relevance_score" not in columns:
+        conn.execute("ALTER TABLE signals ADD COLUMN relevance_score INTEGER NOT NULL DEFAULT 50")
 
 
 def get_topics() -> list[sqlite3.Row]:
@@ -74,29 +84,99 @@ def get_exclusions(topic_id: int) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def create_signal(topic_id: int | None, title: str, source: str, notes: str) -> None:
+def compute_initial_relevance(topic_id: int | None, title: str, notes: str) -> int:
+    """Calcula un score inicial simple en función de tema/subtemas/exclusiones."""
+    score = 50
+    text = f"{title} {notes}".lower()
+
+    with get_connection() as conn:
+        if topic_id is not None:
+            topic = conn.execute("SELECT name FROM topics WHERE id = ?", (topic_id,)).fetchone()
+            if topic and str(topic["name"]).lower() in text:
+                score += 10
+
+            subtopics = conn.execute(
+                "SELECT name FROM subtopics WHERE topic_id = ?",
+                (topic_id,),
+            ).fetchall()
+            for subtopic in subtopics:
+                if str(subtopic["name"]).lower() in text:
+                    score += 15
+
+            exclusions = conn.execute(
+                "SELECT phrase FROM exclusions WHERE topic_id = ?",
+                (topic_id,),
+            ).fetchall()
+            for exclusion in exclusions:
+                if str(exclusion["phrase"]).lower() in text:
+                    score -= 20
+
+    return max(0, min(100, score))
+
+
+def signal_exists(title: str, source: str) -> bool:
+    """Comprueba duplicados simples por título + fuente."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM signals WHERE title = ? AND COALESCE(source, '') = COALESCE(?, '') LIMIT 1",
+            (title.strip(), source.strip()),
+        ).fetchone()
+        return row is not None
+
+
+def create_signal(topic_id: int | None, title: str, source: str, notes: str, origin: str = "web/rss") -> bool:
+    """Inserta señal si no es duplicada. Devuelve True cuando guarda."""
+    clean_title = title.strip()
+    clean_source = source.strip()
+    clean_notes = notes.strip()
+
+    if signal_exists(clean_title, clean_source):
+        return False
+
+    relevance_score = compute_initial_relevance(topic_id, clean_title, clean_notes)
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO signals(topic_id, title, source, notes) VALUES (?, ?, ?, ?)",
-            (topic_id, title.strip(), source.strip(), notes.strip()),
+            """
+            INSERT INTO signals(topic_id, title, source, origin, notes, relevance_score)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (topic_id, clean_title, clean_source, origin, clean_notes, relevance_score),
         )
+    return True
 
 
-def get_signals() -> list[sqlite3.Row]:
+def get_signals(topic_id: int | None = None, status: str = "todos") -> list[sqlite3.Row]:
     query = """
         SELECT s.id,
                s.title,
                s.source,
+               s.origin,
                s.notes,
+               s.relevance_score,
                s.status,
                s.created_at,
                t.name AS topic_name
         FROM signals s
         LEFT JOIN topics t ON t.id = s.topic_id
-        ORDER BY s.created_at DESC, s.id DESC
     """
+    params: list[Any] = []
+    conditions: list[str] = []
+
+    if topic_id is not None:
+        conditions.append("s.topic_id = ?")
+        params.append(topic_id)
+
+    if status != "todos":
+        conditions.append("s.status = ?")
+        params.append(status)
+
+    if conditions:
+        query += f" WHERE {' AND '.join(conditions)}"
+
+    query += " ORDER BY s.created_at DESC, s.id DESC"
+
     with get_connection() as conn:
-        return conn.execute(query).fetchall()
+        return conn.execute(query, params).fetchall()
 
 
 def update_signal_status(signal_id: int, status: str) -> None:
@@ -109,7 +189,9 @@ def get_signals_by_status(status: str) -> list[sqlite3.Row]:
         SELECT s.id,
                s.title,
                s.source,
+               s.origin,
                s.notes,
+               s.relevance_score,
                s.created_at,
                t.name AS topic_name
         FROM signals s
@@ -126,7 +208,9 @@ def get_weekly_saved_signals() -> list[sqlite3.Row]:
         SELECT s.id,
                s.title,
                s.source,
+               s.origin,
                s.notes,
+               s.relevance_score,
                s.created_at,
                t.name AS topic_name
         FROM signals s
