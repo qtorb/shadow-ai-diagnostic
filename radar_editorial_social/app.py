@@ -11,49 +11,92 @@ import streamlit as st
 from db import (
     BOOK_STATUSES,
     compute_editorial_score,
-    count_subtopics,
     create_book,
     create_exclusion,
     create_subtopic,
     create_topic,
+    delete_topic,
     get_books,
     get_books_by_status,
     get_exclusions,
+    get_shortlist_counts,
     get_subtopics,
     get_topic,
-    get_topic_map,
     get_topics,
     get_weekly_saved_books,
     init_db,
     topic_count,
+    update_topic,
     update_book_status,
 )
 from services.google_books import search_google_books
 from services.open_library import search_open_library
 
-MAX_TOPICS = 3
-MAX_SUBTOPICS_PER_TOPIC = 3
+MAX_TOPICS = 12
+MAX_SUBTOPICS_PER_TOPIC = 5
 
 
 def setup_page() -> None:
     st.set_page_config(page_title="Radar de Novedades Editoriales", page_icon="📚", layout="wide")
     st.title("📚 Radar de Novedades Editoriales")
-    st.caption("MVP interno - Fase 2")
+    st.caption("Detecta, prioriza y decide qué novedades editoriales merecen atención.")
 
 
 def nav() -> str:
-    return st.sidebar.radio("Pantallas", ["Temas", "Novedades", "Shortlist", "Briefing editorial"])
+    return st.sidebar.radio(
+        "Navegación",
+        ["Inicio", "Configurar radar", "Novedades", "Shortlist", "Briefing"],
+        key="nav_choice",
+    )
+
+
+def render_inicio_screen() -> None:
+    st.header("Inicio")
+    st.write(
+        "Esta herramienta te ayuda a configurar tus temas editoriales, revisar novedades y "
+        "construir una shortlist útil para decidir qué merece seguimiento."
+    )
+
+    active_topics = topic_count()
+    shortlist_counts = get_shortlist_counts()
+    weekly_saved = get_weekly_saved_books()
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Temas activos", active_topics)
+        st.caption("Puedes seguir hasta 12 temas.")
+    with c2:
+        total_shortlist = shortlist_counts["guardado"] + shortlist_counts["siguiendo"]
+        st.metric("Items en shortlist", total_shortlist)
+        st.caption("Guardados + siguiendo.")
+    with c3:
+        st.metric("Briefing semanal", "Disponible" if weekly_saved else "Pendiente")
+        st.caption("Se activa cuando tienes guardados recientes.")
+
+    st.divider()
+    if active_topics == 0:
+        st.info("Empieza creando tu primer tema para que el radar entienda qué te interesa.")
+        if st.button("➡️ Configurar radar", type="primary"):
+            st.session_state["nav_choice"] = "Configurar radar"
+            st.rerun()
+    else:
+        st.success("Tu radar está configurado. Siguiente paso recomendado: revisar novedades.")
+        if st.button("➡️ Ver novedades", type="primary"):
+            st.session_state["nav_choice"] = "Novedades"
+            st.rerun()
 
 
 def render_topics_screen() -> None:
-    st.header("1) Temas")
-    st.write("Configura hasta 3 temas editoriales, subtemas y preferencias de búsqueda.")
+    st.header("Configurar radar")
+    st.write(
+        "Define los temas que quieres seguir. Cada tema te ayuda a encontrar novedades más relevantes."
+    )
 
     current_topics = get_topics()
-    st.subheader("Crear tema")
+    st.subheader("Añadir tema")
 
     if len(current_topics) >= MAX_TOPICS:
-        st.info("Ya alcanzaste el máximo de 3 temas para esta fase.")
+        st.info("Ya tienes 12 temas activos. Edita o elimina uno para añadir otro.")
     else:
         with st.form("topic_form", clear_on_submit=True):
             topic_name = st.text_input("Nombre del tema")
@@ -62,7 +105,7 @@ def render_topics_screen() -> None:
             time_window = st.selectbox("Ventana temporal", [30, 60, 90], index=1)
             preferred_authors = st.text_input("Autores preferidos (separados por coma)")
             preferred_publishers = st.text_input("Editoriales preferidas (separadas por coma)")
-            submitted = st.form_submit_button("Guardar tema")
+            submitted = st.form_submit_button("Añadir tema")
 
             if submitted:
                 if not topic_name.strip():
@@ -77,16 +120,16 @@ def render_topics_screen() -> None:
                             preferred_authors,
                             preferred_publishers,
                         )
-                        st.success("Tema guardado.")
+                        st.success("Tema añadido.")
                         st.rerun()
                     except sqlite3.IntegrityError:
                         st.warning("Ese tema ya existe.")
 
     st.divider()
-    st.subheader("Temas configurados")
+    st.subheader("Tus temas")
 
     if not current_topics:
-        st.info("Aún no hay temas.")
+        st.info("Aún no tienes temas. Empieza creando uno para activar el radar.")
         return
 
     for topic in current_topics:
@@ -109,6 +152,55 @@ def render_topics_screen() -> None:
                 f"Editoriales preferidas: {topic['preferred_publishers'] or 'N/D'}"
             )
 
+            action_col_1, action_col_2 = st.columns([1, 1])
+            with action_col_1:
+                with st.expander("Editar tema"):
+                    with st.form(f"edit_topic_form_{topic_id}"):
+                        edit_name = st.text_input("Nombre", value=topic_name)
+                        edit_language = st.selectbox(
+                            "Idioma principal",
+                            ["", "es", "en", "ca", "fr", "pt"],
+                            index=["", "es", "en", "ca", "fr", "pt"].index(str(topic["language"] or "")),
+                            key=f"edit_lang_{topic_id}",
+                        )
+                        edit_non_fiction = st.checkbox(
+                            "Solo no ficción", value=bool(topic["non_fiction"]), key=f"edit_nf_{topic_id}"
+                        )
+                        current_window = int(topic["time_window"] or 60)
+                        edit_time_window = st.selectbox(
+                            "Ventana temporal", [30, 60, 90], index=[30, 60, 90].index(current_window)
+                        )
+                        edit_authors = st.text_input(
+                            "Autores preferidos", value=str(topic["preferred_authors"] or "")
+                        )
+                        edit_publishers = st.text_input(
+                            "Editoriales preferidas", value=str(topic["preferred_publishers"] or "")
+                        )
+                        if st.form_submit_button("Guardar cambios"):
+                            if not edit_name.strip():
+                                st.warning("El nombre del tema no puede estar vacío.")
+                            else:
+                                try:
+                                    update_topic(
+                                        topic_id=topic_id,
+                                        name=edit_name,
+                                        language=edit_language,
+                                        non_fiction=edit_non_fiction,
+                                        time_window=int(edit_time_window),
+                                        preferred_authors=edit_authors,
+                                        preferred_publishers=edit_publishers,
+                                    )
+                                    st.success("Tema actualizado.")
+                                    st.rerun()
+                                except sqlite3.IntegrityError:
+                                    st.warning("Ya existe un tema con ese nombre.")
+            with action_col_2:
+                if st.button("Eliminar tema", key=f"delete_topic_{topic_id}"):
+                    delete_topic(topic_id)
+                    st.success("Tema eliminado.")
+                    st.rerun()
+
+            st.divider()
             subtopics = get_subtopics(topic_id)
             exclusions = get_exclusions(topic_id)
             col1, col2 = st.columns(2)
@@ -122,7 +214,7 @@ def render_topics_screen() -> None:
                     st.caption("Sin subtemas todavía.")
 
                 if len(subtopics) >= MAX_SUBTOPICS_PER_TOPIC:
-                    st.caption("Límite de 3 subtemas alcanzado.")
+                    st.caption("Límite de 5 subtemas alcanzado.")
                 else:
                     with st.form(f"subtopic_form_{topic_id}", clear_on_submit=True):
                         subtopic_name = st.text_input("Añadir subtema", key=f"subtopic_input_{topic_id}")
@@ -239,12 +331,12 @@ def _search_and_store_books(topic_id: int, per_query: int) -> tuple[int, int, li
 
 
 def render_novedades_screen() -> None:
-    st.header("2) Novedades")
-    st.write("Detecta y prioriza libros nuevos por tema desde Google Books y Open Library.")
+    st.header("Novedades")
+    st.write("Revisa novedades editoriales y guarda lo más prometedor para tu shortlist.")
 
     topics = get_topics()
     if not topics:
-        st.info("Primero crea al menos un tema en la pantalla Temas.")
+        st.info("Añade un tema en Configurar radar para empezar a detectar novedades.")
         return
 
     topic_options = {str(topic["name"]): int(topic["id"]) for topic in topics}
@@ -256,9 +348,9 @@ def render_novedades_screen() -> None:
 
         if submitted:
             created, duplicated, errors = _search_and_store_books(topic_options[selected_topic], per_query)
-            st.success(f"Búsqueda completada. Libros nuevos: {created} | Duplicados: {duplicated}")
+            st.success(f"Hemos encontrado {created} novedades nuevas ({duplicated} duplicadas).")
             if errors:
-                st.warning("Alguna fuente falló, pero la app siguió funcionando:")
+                st.warning("Alguna fuente no respondió, pero el radar siguió funcionando:")
                 for error in sorted(set(errors)):
                     st.caption(f"- {error}")
             st.rerun()
@@ -275,7 +367,7 @@ def render_novedades_screen() -> None:
     books = get_books(topic_id=selected_topic_id, status=filter_status)
 
     if not books:
-        st.info("Aún no hay libros detectados.")
+        st.info("Todavía no tienes novedades revisadas. Lanza una búsqueda para empezar.")
         return
 
     for book in books:
@@ -308,7 +400,7 @@ def render_novedades_screen() -> None:
             )
             if book["notes"]:
                 st.write(book["notes"])
-            st.caption(f"Por qué encaja: {book['why_fit'] or 'encaje general por tema'}")
+            st.caption(f"Por qué encaja: {book['why_fit'] or 'Encaje general con el tema'}")
 
             if book["source"]:
                 st.link_button("Ver fuente", book["source"])
@@ -330,31 +422,33 @@ def render_novedades_screen() -> None:
 
 
 def render_shortlist_screen() -> None:
-    st.header("3) Shortlist")
-    st.write("Vista editorial por estado: guardado, descartado y siguiendo.")
+    st.header("Shortlist")
+    st.write("Organiza tus decisiones editoriales en tres bloques claros.")
 
-    columns = st.columns(3)
-    for index, status in enumerate(BOOK_STATUSES):
-        with columns[index]:
-            st.subheader(status.capitalize())
+    tabs = st.tabs(["Guardados", "Siguiendo", "Descartados"])
+    status_by_tab = [("guardado", tabs[0]), ("siguiendo", tabs[1]), ("descartado", tabs[2])]
+    for status, tab in status_by_tab:
+        with tab:
             items = get_books_by_status(status)
             if not items:
-                st.caption("Sin libros.")
+                st.caption("Tu shortlist está vacía en esta sección.")
                 continue
             for book in items:
-                st.markdown(
-                    f"- **{book['title']}** · {book['author'] or 'Autor N/D'} "
-                    f"({book['topic_name'] or 'Sin tema'})"
-                )
+                with st.container(border=True):
+                    st.markdown(f"**{book['title']}**")
+                    st.caption(
+                        f"{book['author'] or 'Autor N/D'} | {book['topic_name'] or 'Sin tema'} | "
+                        f"Score {book['relevance_score']}"
+                    )
 
 
 def render_briefing_screen() -> None:
-    st.header("4) Briefing editorial")
-    st.write("Resumen semanal de libros guardados con patrones editoriales básicos.")
+    st.header("Briefing")
+    st.write("Una síntesis editorial para decidir qué merece atención esta semana.")
 
     weekly_books = get_weekly_saved_books()
     if not weekly_books:
-        st.info("No hay libros guardados en la última semana.")
+        st.info("Aún no hay guardados recientes. Revisa novedades y guarda lo más prometedor.")
         return
 
     st.subheader("Libros nuevos más relevantes")
@@ -404,10 +498,12 @@ def run_app() -> None:
     setup_page()
 
     st.sidebar.markdown("---")
-    st.sidebar.caption(f"Temas creados: {topic_count()}/{MAX_TOPICS}")
+    st.sidebar.caption(f"Temas activos: {topic_count()}/{MAX_TOPICS}")
 
     current_screen = nav()
-    if current_screen == "Temas":
+    if current_screen == "Inicio":
+        render_inicio_screen()
+    elif current_screen == "Configurar radar":
         render_topics_screen()
     elif current_screen == "Novedades":
         render_novedades_screen()

@@ -186,6 +186,39 @@ def create_topic(
         )
 
 
+def update_topic(
+    topic_id: int,
+    name: str,
+    language: str,
+    non_fiction: bool,
+    time_window: int,
+    preferred_authors: str,
+    preferred_publishers: str,
+) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE topics
+            SET name = ?, language = ?, non_fiction = ?, time_window = ?, preferred_authors = ?, preferred_publishers = ?
+            WHERE id = ?
+            """,
+            (
+                name.strip(),
+                language.strip().lower(),
+                1 if non_fiction else 0,
+                time_window,
+                preferred_authors.strip(),
+                preferred_publishers.strip(),
+                topic_id,
+            ),
+        )
+
+
+def delete_topic(topic_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM topics WHERE id = ?", (topic_id,))
+
+
 def get_topic(topic_id: int) -> sqlite3.Row | None:
     with get_connection() as conn:
         return conn.execute("SELECT * FROM topics WHERE id = ?", (topic_id,)).fetchone()
@@ -413,6 +446,22 @@ def get_weekly_saved_books() -> list[sqlite3.Row]:
             ORDER BY s.relevance_score DESC, s.created_at DESC
             """
         ).fetchall()
+
+
+def get_shortlist_counts() -> dict[str, int]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT status, COUNT(*) AS total
+            FROM signals
+            WHERE status IN ('guardado', 'descartado', 'siguiendo')
+            GROUP BY status
+            """
+        ).fetchall()
+    counts = {"guardado": 0, "descartado": 0, "siguiendo": 0}
+    for row in rows:
+        counts[str(row["status"])] = int(row["total"])
+    return counts
 
 
 def topic_count() -> int:

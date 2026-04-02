@@ -5,12 +5,13 @@ Aplicación local (un solo ordenador) hecha con **Python + Streamlit + SQLite**.
 ## Qué incluye esta versión
 
 - 4 pantallas:
-  - Temas
+  - Inicio
+  - Configurar radar
   - Novedades
   - Shortlist
-  - Briefing editorial
-- Hasta 3 temas.
-- Hasta 3 subtemas por tema.
+  - Briefing
+- Hasta 12 temas.
+- Hasta 5 subtemas por tema.
 - Exclusiones por tema.
 - Configuración editorial por tema:
   - idioma principal,
@@ -73,11 +74,12 @@ Aplicación local (un solo ordenador) hecha con **Python + Streamlit + SQLite**.
 
 ## Uso rápido de Fase 2
 
-1. Entra en **Temas** y crea al menos un tema con preferencias editoriales.
-2. Añade subtemas (máx. 3).
-3. Entra en **Novedades** y pulsa **Buscar novedades reales**.
-4. Revisa libros detectados y cambia estado (`guardado`, `descartado`, `siguiendo`).
-5. Consulta **Shortlist** y **Briefing editorial**.
+1. Entra en **Inicio** para ver estado y siguiente paso recomendado.
+2. Ve a **Configurar radar** y crea al menos un tema con preferencias editoriales.
+3. Añade subtemas (máx. 5).
+4. Entra en **Novedades** y pulsa **Buscar novedades reales**.
+5. Revisa libros detectados y cambia estado (`guardado`, `descartado`, `siguiendo`).
+6. Consulta **Shortlist** y **Briefing**.
 
 ## Variables de entorno / credenciales
 
