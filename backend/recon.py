@@ -6,6 +6,10 @@ import re
 import os
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+try:
+    import dns.resolver
+except ImportError:
+    dns = None
 
 load_dotenv()
 
@@ -172,7 +176,8 @@ async def check_email_security(domain: str) -> dict:
     dmarc_record = None
 
     try:
-        import dns.resolver
+        if dns is None:
+            raise ImportError("dnspython not installed")
         resolver = dns.resolver.Resolver()
         resolver.timeout = 5
         resolver.lifetime = 5
@@ -180,7 +185,7 @@ async def check_email_security(domain: str) -> dict:
         # SPF
         try:
             for rdata in resolver.resolve(domain, "TXT"):
-                txt = str(rdata).strip('"')
+                txt = "".join(str(rdata).split('"')).strip()
                 if txt.startswith("v=spf1"):
                     spf_record = txt
                     score += 8
@@ -192,19 +197,26 @@ async def check_email_security(domain: str) -> dict:
                     "detail": "Sin SPF cualquier servidor puede enviar emails en nombre de este dominio.",
                     "recommendation": "Añade registro TXT: v=spf1 include:... ~all"
                 })
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            findings.append({
+                "id": "spf_missing", "severity": "high",
+                "title": "SPF no configurado",
+                "detail": "No se encontró registro SPF en el DNS del dominio.",
+                "recommendation": "Añade registro TXT: v=spf1 include:... ~all"
+            })
         except Exception:
             findings.append({
                 "id": "spf_error", "severity": "info",
                 "title": "No se pudo verificar SPF",
-                "detail": "No se obtuvo respuesta DNS para registros TXT.",
-                "recommendation": "Verifica los registros DNS del dominio."
+                "detail": "Error al consultar los registros DNS. El registro puede existir pero no fue accesible.",
+                "recommendation": "Verifica manualmente los registros DNS del dominio."
             })
 
         # DMARC
         try:
             dmarc_record = None
             for rdata in resolver.resolve(f"_dmarc.{domain}", "TXT"):
-                txt = str(rdata).strip('"')
+                txt = "".join(str(rdata).split('"')).strip()
                 if txt.startswith("v=DMARC1"):
                     dmarc_record = txt
                     score += 7
@@ -227,15 +239,26 @@ async def check_email_security(domain: str) -> dict:
                         })
                     break
             if not dmarc_record:
-                raise Exception("No DMARC record found")
-        except Exception:
-            if not dmarc_record:
                 findings.append({
                     "id": "dmarc_missing", "severity": "high",
                     "title": "DMARC no configurado",
                     "detail": "Sin DMARC no hay política de rechazo para emails fraudulentos.",
                     "recommendation": "Añade TXT en _dmarc.dominio: v=DMARC1; p=quarantine; rua=mailto:..."
                 })
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            findings.append({
+                "id": "dmarc_missing", "severity": "high",
+                "title": "DMARC no configurado",
+                "detail": "Sin DMARC no hay política de rechazo para emails fraudulentos.",
+                "recommendation": "Añade TXT en _dmarc.dominio: v=DMARC1; p=quarantine; rua=mailto:..."
+            })
+        except Exception:
+            findings.append({
+                "id": "dmarc_error", "severity": "info",
+                "title": "No se pudo verificar DMARC",
+                "detail": "Error al consultar _dmarc del dominio. El registro puede existir pero no fue accesible.",
+                "recommendation": "Verifica manualmente el registro DMARC del dominio."
+            })
 
     except ImportError:
         findings.append({
