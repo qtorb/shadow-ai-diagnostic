@@ -1,54 +1,53 @@
-"""MVP interno: Radar Editorial Social (Fase 1)."""
+"""MVP interno: Radar de Novedades Editoriales (Fase 2)."""
 
 from __future__ import annotations
 
 import sqlite3
+from collections import Counter
 from datetime import datetime
 
-import feedparser
 import streamlit as st
 
 from db import (
+    BOOK_STATUSES,
+    compute_editorial_score,
+    count_subtopics,
+    create_book,
     create_exclusion,
-    create_signal,
     create_subtopic,
     create_topic,
+    get_books,
+    get_books_by_status,
     get_exclusions,
-    get_signals,
-    get_signals_by_status,
     get_subtopics,
+    get_topic,
     get_topic_map,
     get_topics,
-    get_weekly_saved_signals,
-    signal_exists,
+    get_weekly_saved_books,
     init_db,
     topic_count,
-    update_signal_status,
+    update_book_status,
 )
+from services.google_books import search_google_books
+from services.open_library import search_open_library
 
 MAX_TOPICS = 3
 MAX_SUBTOPICS_PER_TOPIC = 3
-STATUSES = ["guardada", "descartada", "idea"]
-RSS_FEEDS_EXAMPLE = [
-    "https://blog.streamlit.io/rss/",
-    "https://openai.com/news/rss.xml",
-    "https://www.theverge.com/rss/index.xml",
-]
 
 
 def setup_page() -> None:
-    st.set_page_config(page_title="Radar Editorial Social", page_icon="🛰️", layout="wide")
-    st.title("🛰️ Radar Editorial Social")
-    st.caption("MVP interno - Fase 1")
+    st.set_page_config(page_title="Radar de Novedades Editoriales", page_icon="📚", layout="wide")
+    st.title("📚 Radar de Novedades Editoriales")
+    st.caption("MVP interno - Fase 2")
 
 
 def nav() -> str:
-    return st.sidebar.radio("Pantallas", ["Temas", "Radar", "Memoria", "Briefing"])
+    return st.sidebar.radio("Pantallas", ["Temas", "Novedades", "Shortlist", "Briefing editorial"])
 
 
 def render_topics_screen() -> None:
     st.header("1) Temas")
-    st.write("Define hasta 3 temas, hasta 3 subtemas por tema y exclusiones.")
+    st.write("Configura hasta 3 temas editoriales, subtemas y preferencias de búsqueda.")
 
     current_topics = get_topics()
     st.subheader("Crear tema")
@@ -58,6 +57,11 @@ def render_topics_screen() -> None:
     else:
         with st.form("topic_form", clear_on_submit=True):
             topic_name = st.text_input("Nombre del tema")
+            language = st.selectbox("Idioma principal", ["", "es", "en", "ca", "fr", "pt"])
+            non_fiction = st.checkbox("Solo no ficción")
+            time_window = st.selectbox("Ventana temporal", [30, 60, 90], index=1)
+            preferred_authors = st.text_input("Autores preferidos (separados por coma)")
+            preferred_publishers = st.text_input("Editoriales preferidas (separadas por coma)")
             submitted = st.form_submit_button("Guardar tema")
 
             if submitted:
@@ -65,7 +69,14 @@ def render_topics_screen() -> None:
                     st.warning("El nombre del tema no puede estar vacío.")
                 else:
                     try:
-                        create_topic(topic_name)
+                        create_topic(
+                            topic_name,
+                            language,
+                            non_fiction,
+                            int(time_window),
+                            preferred_authors,
+                            preferred_publishers,
+                        )
                         st.success("Tema guardado.")
                         st.rerun()
                     except sqlite3.IntegrityError:
@@ -84,10 +95,22 @@ def render_topics_screen() -> None:
 
         with st.container(border=True):
             st.markdown(f"### {topic_name}")
+            st.caption(
+                " | ".join(
+                    [
+                        f"Idioma: {topic['language'] or 'cualquiera'}",
+                        f"No ficción: {'sí' if topic['non_fiction'] else 'no'}",
+                        f"Ventana: {topic['time_window'] or 60} días",
+                    ]
+                )
+            )
+            st.caption(
+                f"Autores preferidos: {topic['preferred_authors'] or 'N/D'} | "
+                f"Editoriales preferidas: {topic['preferred_publishers'] or 'N/D'}"
+            )
 
             subtopics = get_subtopics(topic_id)
             exclusions = get_exclusions(topic_id)
-
             col1, col2 = st.columns(2)
 
             with col1:
@@ -138,180 +161,242 @@ def render_topics_screen() -> None:
                                 st.warning("Esa exclusión ya existe en este tema.")
 
 
-def render_radar_screen() -> None:
-    st.header("2) Radar")
-    st.write("Carga señales manuales o desde RSS y clasifícalas rápidamente.")
+def _search_and_store_books(topic_id: int, per_query: int) -> tuple[int, int, list[str]]:
+    topic = get_topic(topic_id)
+    if topic is None:
+        return 0, 0, ["Tema no encontrado"]
 
-    topic_map = get_topic_map()
-    topic_options = {"(Sin tema)": None}
-    topic_options.update({name: topic_id for topic_id, name in topic_map.items()})
+    subtopics = get_subtopics(topic_id)
+    queries = [str(topic["name"])] + [str(subtopic["name"]) for subtopic in subtopics]
+    errors: list[str] = []
+    created = 0
+    duplicated = 0
 
-    st.subheader("Carga manual de señal")
-    with st.form("signal_form", clear_on_submit=True):
-        selected_topic_name = st.selectbox("Tema", list(topic_options.keys()))
-        title = st.text_input("Título de la señal *")
-        source = st.text_input("Fuente (opcional)")
-        notes = st.text_area("Notas (opcional)")
-        submitted = st.form_submit_button("Guardar señal")
+    for query in queries:
+        google_books, google_error = search_google_books(
+            query=query,
+            language=str(topic["language"] or ""),
+            max_results=per_query,
+            non_fiction_only=bool(topic["non_fiction"]),
+        )
+        if google_error:
+            errors.append(google_error)
+
+        open_library_books, open_error = search_open_library(
+            query=query,
+            language=str(topic["language"] or ""),
+            max_results=per_query,
+            non_fiction_only=bool(topic["non_fiction"]),
+        )
+        if open_error:
+            errors.append(open_error)
+
+        for book in google_books + open_library_books:
+            subtopic_id = next(
+                (
+                    int(st_row["id"])
+                    for st_row in subtopics
+                    if str(st_row["name"]).lower() in f"{book['titulo']} {book['descripcion']}".lower()
+                ),
+                None,
+            )
+            subtopic_name = next(
+                (str(st_row["name"]) for st_row in subtopics if int(st_row["id"]) == subtopic_id),
+                "",
+            )
+            score, why_fit = compute_editorial_score(
+                topic=topic,
+                subtopic_name=subtopic_name,
+                title=book["titulo"],
+                description=book["descripcion"],
+                author=book["autor"],
+                publisher=book["editorial"],
+                language=book["idioma"],
+                publication_date=book["fecha_publicacion"],
+            )
+
+            was_created = create_book(
+                topic_id=topic_id,
+                subtopic_id=subtopic_id,
+                title=book["titulo"],
+                author=book["autor"],
+                publisher=book["editorial"],
+                publication_date=book["fecha_publicacion"],
+                language=book["idioma"],
+                description=book["descripcion"],
+                source=book["source_url"],
+                origin=book["fuente_origen"],
+                score=score,
+                why_fit=why_fit,
+                status="siguiendo",
+            )
+            if was_created:
+                created += 1
+            else:
+                duplicated += 1
+
+    return created, duplicated, errors
+
+
+def render_novedades_screen() -> None:
+    st.header("2) Novedades")
+    st.write("Detecta y prioriza libros nuevos por tema desde Google Books y Open Library.")
+
+    topics = get_topics()
+    if not topics:
+        st.info("Primero crea al menos un tema en la pantalla Temas.")
+        return
+
+    topic_options = {str(topic["name"]): int(topic["id"]) for topic in topics}
+
+    with st.form("books_ingest_form"):
+        selected_topic = st.selectbox("Tema a explorar", list(topic_options.keys()))
+        per_query = st.slider("Resultados por tema/subtema", min_value=2, max_value=8, value=4)
+        submitted = st.form_submit_button("Buscar novedades reales")
 
         if submitted:
-            if not title.strip():
-                st.warning("El título es obligatorio.")
-            else:
-                was_created = create_signal(topic_options[selected_topic_name], title, source, notes, origin="web/rss")
-                if was_created:
-                    st.success("Señal guardada en Radar.")
-                    st.rerun()
-                else:
-                    st.warning("Señal duplicada detectada (mismo título y fuente).")
-
-    st.subheader("Ingestión básica desde RSS")
-    with st.form("rss_ingest_form", clear_on_submit=False):
-        selected_topic_name_rss = st.selectbox("Tema para señales RSS", list(topic_options.keys()), key="rss_topic")
-        rss_url = st.text_input("URL del feed RSS")
-        max_items = st.slider("Máximo de entradas a importar", min_value=1, max_value=20, value=5)
-        submitted_rss = st.form_submit_button("Importar RSS")
-
-        if submitted_rss:
-            if not rss_url.strip():
-                st.warning("Debes indicar una URL RSS.")
-            else:
-                parsed_feed = feedparser.parse(rss_url.strip())
-                if parsed_feed.bozo:
-                    st.error("No se pudo leer el feed RSS. Revisa la URL.")
-                else:
-                    created_count = 0
-                    duplicate_count = 0
-                    entries = parsed_feed.entries[:max_items]
-                    for entry in entries:
-                        entry_title = getattr(entry, "title", "").strip()
-                        entry_link = getattr(entry, "link", "").strip()
-                        entry_summary = getattr(entry, "summary", "").strip()
-                        if not entry_title:
-                            continue
-
-                        if signal_exists(entry_title, entry_link):
-                            duplicate_count += 1
-                            continue
-
-                        was_created = create_signal(
-                            topic_options[selected_topic_name_rss],
-                            entry_title,
-                            entry_link,
-                            entry_summary,
-                            origin="web/rss",
-                        )
-                        if was_created:
-                            created_count += 1
-                        else:
-                            duplicate_count += 1
-
-                    st.success(f"Importación completada. Nuevas: {created_count} | Duplicadas: {duplicate_count}")
-                    st.rerun()
-
-    with st.expander("Feeds RSS de ejemplo"):
-        for feed_url in RSS_FEEDS_EXAMPLE:
-            st.code(feed_url)
+            created, duplicated, errors = _search_and_store_books(topic_options[selected_topic], per_query)
+            st.success(f"Búsqueda completada. Libros nuevos: {created} | Duplicados: {duplicated}")
+            if errors:
+                st.warning("Alguna fuente falló, pero la app siguió funcionando:")
+                for error in sorted(set(errors)):
+                    st.caption(f"- {error}")
+            st.rerun()
 
     st.divider()
-    st.subheader("Señales en Radar")
 
     filter_col_1, filter_col_2 = st.columns(2)
     with filter_col_1:
-        filter_topic_name = st.selectbox("Filtrar por tema", list(topic_options.keys()), key="radar_filter_topic")
+        filter_topic_name = st.selectbox("Filtrar por tema", ["(Todos)"] + list(topic_options.keys()))
     with filter_col_2:
-        filter_status = st.selectbox("Filtrar por estado", ["todos"] + STATUSES, key="radar_filter_status")
+        filter_status = st.selectbox("Filtrar por estado", ["todos"] + BOOK_STATUSES)
 
-    selected_topic_id = topic_options[filter_topic_name]
-    signals = get_signals(topic_id=selected_topic_id, status=filter_status)
-    if not signals:
-        st.info("Aún no hay señales cargadas.")
+    selected_topic_id = topic_options.get(filter_topic_name) if filter_topic_name != "(Todos)" else None
+    books = get_books(topic_id=selected_topic_id, status=filter_status)
+
+    if not books:
+        st.info("Aún no hay libros detectados.")
         return
 
-    for signal in signals:
-        signal_id = int(signal["id"])
-        topic_name = signal["topic_name"] or "Sin tema"
-        created_at = datetime.fromisoformat(signal["created_at"]).strftime("%Y-%m-%d %H:%M")
+    for book in books:
+        book_id = int(book["id"])
+        created_at = datetime.fromisoformat(book["created_at"]).strftime("%Y-%m-%d %H:%M")
 
         with st.container(border=True):
-            st.markdown(f"**{signal['title']}**")
+            st.markdown(f"### {book['title']}")
             st.caption(
                 " | ".join(
                     [
-                        f"Tema: {topic_name}",
-                        f"Origen: {signal['origin']}",
-                        f"Fuente: {signal['source'] or 'N/A'}",
-                        f"Score: {signal['relevance_score']}",
-                        f"Fecha: {created_at}",
+                        f"Autor: {book['author'] or 'N/D'}",
+                        f"Editorial: {book['publisher'] or 'N/D'}",
+                        f"Fecha pub.: {book['publication_date'] or 'N/D'}",
+                        f"Idioma: {book['language'] or 'N/D'}",
                     ]
                 )
             )
-            if signal["notes"]:
-                st.write(signal["notes"])
+            st.caption(
+                " | ".join(
+                    [
+                        f"Tema: {book['topic_name'] or 'Sin tema'}",
+                        f"Subtema: {book['subtopic_name'] or 'N/D'}",
+                        f"Fuente origen: {book['origin']}",
+                        f"Score: {book['relevance_score']}",
+                        f"Estado: {book['status']}",
+                        f"Detectado: {created_at}",
+                    ]
+                )
+            )
+            if book["notes"]:
+                st.write(book["notes"])
+            st.caption(f"Por qué encaja: {book['why_fit'] or 'encaje general por tema'}")
+
+            if book["source"]:
+                st.link_button("Ver fuente", book["source"])
 
             col_status, col_action = st.columns([2, 1])
             with col_status:
                 new_status = st.radio(
                     "Estado",
-                    STATUSES,
+                    BOOK_STATUSES,
                     horizontal=True,
-                    index=STATUSES.index(signal["status"]),
-                    key=f"status_{signal_id}",
+                    index=BOOK_STATUSES.index(book["status"]),
+                    key=f"status_{book_id}",
                 )
             with col_action:
-                if st.button("Actualizar", key=f"update_{signal_id}"):
-                    update_signal_status(signal_id, new_status)
+                if st.button("Actualizar", key=f"update_{book_id}"):
+                    update_book_status(book_id, new_status)
                     st.success("Estado actualizado.")
                     st.rerun()
 
 
-def render_memory_screen() -> None:
-    st.header("3) Memoria")
-    st.write("Vista por estado: guardada, descartada e idea.")
+def render_shortlist_screen() -> None:
+    st.header("3) Shortlist")
+    st.write("Vista editorial por estado: guardado, descartado y siguiendo.")
 
-    col_saved, col_discarded, col_idea = st.columns(3)
-
-    status_to_column = {
-        "guardada": col_saved,
-        "descartada": col_discarded,
-        "idea": col_idea,
-    }
-
-    for status, column in status_to_column.items():
-        with column:
+    columns = st.columns(3)
+    for index, status in enumerate(BOOK_STATUSES):
+        with columns[index]:
             st.subheader(status.capitalize())
-            items = get_signals_by_status(status)
+            items = get_books_by_status(status)
             if not items:
-                st.caption("Sin señales.")
+                st.caption("Sin libros.")
                 continue
-
-            for signal in items:
-                topic = signal["topic_name"] or "Sin tema"
-                st.markdown(f"- **{signal['title']}** ({topic})")
+            for book in items:
+                st.markdown(
+                    f"- **{book['title']}** · {book['author'] or 'Autor N/D'} "
+                    f"({book['topic_name'] or 'Sin tema'})"
+                )
 
 
 def render_briefing_screen() -> None:
-    st.header("4) Briefing")
-    st.write("Resumen semanal simple basado en señales guardadas de los últimos 7 días.")
+    st.header("4) Briefing editorial")
+    st.write("Resumen semanal de libros guardados con patrones editoriales básicos.")
 
-    weekly_saved = get_weekly_saved_signals()
-
-    if not weekly_saved:
-        st.info("No hay señales guardadas en la última semana.")
+    weekly_books = get_weekly_saved_books()
+    if not weekly_books:
+        st.info("No hay libros guardados en la última semana.")
         return
 
-    st.subheader("Briefing semanal")
-    st.markdown(f"**Total de señales guardadas (7 días):** {len(weekly_saved)}")
+    st.subheader("Libros nuevos más relevantes")
+    for book in weekly_books[:10]:
+        st.markdown(
+            f"- **{book['title']}** · {book['author'] or 'Autor N/D'} "
+            f"(score {book['relevance_score']})"
+        )
 
-    grouped_by_topic: dict[str, list[str]] = {}
-    for signal in weekly_saved:
-        topic_name = signal["topic_name"] or "Sin tema"
-        grouped_by_topic.setdefault(topic_name, []).append(signal["title"])
+    topic_counter = Counter(str(book["topic_name"] or "Sin tema") for book in weekly_books)
+    author_counter = Counter(str(book["author"] or "") for book in weekly_books if book["author"])
+    publisher_counter = Counter(str(book["publisher"] or "") for book in weekly_books if book["publisher"])
 
-    for topic_name, titles in grouped_by_topic.items():
-        st.markdown(f"### {topic_name}")
-        for title in titles:
-            st.markdown(f"- {title}")
+    st.subheader("Patrones por tema")
+    for topic_name, count in topic_counter.most_common(5):
+        st.markdown(f"- {topic_name}: {count} libros guardados")
+
+    st.subheader("Autores/editoriales que se repiten")
+    repeated_authors = [item for item in author_counter.items() if item[1] > 1]
+    repeated_publishers = [item for item in publisher_counter.items() if item[1] > 1]
+
+    if repeated_authors:
+        st.markdown("**Autores**")
+        for author, count in repeated_authors[:5]:
+            st.markdown(f"- {author} ({count})")
+
+    if repeated_publishers:
+        st.markdown("**Editoriales**")
+        for publisher, count in repeated_publishers[:5]:
+            st.markdown(f"- {publisher} ({count})")
+
+    st.subheader("Posibles libros prometedores para seguir o reseñar")
+    following_or_high_score = [
+        book
+        for book in weekly_books
+        if int(book["relevance_score"]) >= 70 or (book["why_fit"] and "prefer" in str(book["why_fit"]).lower())
+    ]
+    if not following_or_high_score:
+        st.caption("No hay candidatos claros todavía.")
+    else:
+        for book in following_or_high_score[:5]:
+            st.markdown(f"- **{book['title']}** ({book['why_fit']})")
 
 
 def run_app() -> None:
@@ -322,13 +407,12 @@ def run_app() -> None:
     st.sidebar.caption(f"Temas creados: {topic_count()}/{MAX_TOPICS}")
 
     current_screen = nav()
-
     if current_screen == "Temas":
         render_topics_screen()
-    elif current_screen == "Radar":
-        render_radar_screen()
-    elif current_screen == "Memoria":
-        render_memory_screen()
+    elif current_screen == "Novedades":
+        render_novedades_screen()
+    elif current_screen == "Shortlist":
+        render_shortlist_screen()
     else:
         render_briefing_screen()
 

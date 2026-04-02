@@ -1,4 +1,4 @@
-# Radar Editorial Social (MVP Fase 1)
+# Radar de Novedades Editoriales (MVP Fase 2)
 
 Aplicación local (un solo ordenador) hecha con **Python + Streamlit + SQLite**.
 
@@ -6,46 +6,30 @@ Aplicación local (un solo ordenador) hecha con **Python + Streamlit + SQLite**.
 
 - 4 pantallas:
   - Temas
-  - Radar
-  - Memoria
-  - Briefing
+  - Novedades
+  - Shortlist
+  - Briefing editorial
 - Hasta 3 temas.
 - Hasta 3 subtemas por tema.
 - Exclusiones por tema.
-- Carga manual de señales.
-- Ingestión básica desde RSS (URL de feed + límite de entradas).
-- Evita duplicados simples de señales (mismo título + misma fuente).
-- Score inicial de relevancia (0-100) al guardar cada señal.
-- Filtros básicos en Radar por tema y estado.
-- Estados por señal: `guardada`, `descartada`, `idea`.
-- Briefing semanal simple desde señales guardadas (últimos 7 días).
+- Configuración editorial por tema:
+  - idioma principal,
+  - solo no ficción,
+  - ventana temporal (30/60/90),
+  - autores preferidos,
+  - editoriales preferidas.
+- Ingestión real de libros desde:
+  - Google Books
+  - Open Library
+- Normalización a una estructura común de libro.
+- Dedupe simple por `titulo + autor`.
+- Score editorial inicial (0-100).
+- Estados por libro: `guardado`, `descartado`, `siguiendo`.
+- Briefing editorial semanal con patrones básicos.
 
 ## Requisitos
 
 - Python 3.10+
-
-## Mover a un nuevo workspace (recomendado)
-
-Si quieres separar este MVP del repo `shadow-ai-diagnostic`, usa:
-
-```bash
-cd /workspace/shadow-ai-diagnostic/radar_editorial_social
-./export_to_workspace.sh
-```
-
-Esto crea/actualiza el workspace independiente en:
-
-- `/workspace/Radar editorial social`
-
-Y luego puedes ejecutarlo así:
-
-```bash
-cd "/workspace/Radar editorial social"
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-streamlit run app.py
-```
 
 ## Ejecutar (pasos simples)
 
@@ -87,44 +71,22 @@ streamlit run app.py
 
 6. Abrir en navegador la URL que muestra Streamlit (normalmente `http://localhost:8501`).
 
-## Uso rápido de RSS
+## Uso rápido de Fase 2
 
-1. Entra en la pantalla **Radar**.
-2. En la sección **Ingestión básica desde RSS**:
-   - elige un tema (opcional),
-   - pega la URL del feed,
-   - define cuántas entradas importar.
-3. Pulsa **Importar RSS**.
-4. Las señales nuevas se guardan en SQLite con:
-   - `origin = web/rss`,
-   - estado inicial `idea`,
-   - score inicial de relevancia.
+1. Entra en **Temas** y crea al menos un tema con preferencias editoriales.
+2. Añade subtemas (máx. 3).
+3. Entra en **Novedades** y pulsa **Buscar novedades reales**.
+4. Revisa libros detectados y cambia estado (`guardado`, `descartado`, `siguiendo`).
+5. Consulta **Shortlist** y **Briefing editorial**.
 
-## Feeds RSS de ejemplo usados
+## Variables de entorno / credenciales
 
-- https://blog.streamlit.io/rss/
-- https://openai.com/news/rss.xml
-- https://www.theverge.com/rss/index.xml
+- Esta fase usa endpoints públicos de Google Books y Open Library.
+- **No requiere credenciales obligatorias** para el flujo básico actual.
+- Si en una siguiente fase quieres cuota dedicada en Google Books, se podrá añadir API key como variable de entorno.
 
 ## Notas
 
 - La base de datos se crea automáticamente al iniciar (`radar_editorial_social.db`).
 - No hay autenticación ni multiusuario en esta fase.
-
-## Publicarlo en GitHub (rápido)
-
-1. Crea un repositorio vacío en GitHub (privado o público).
-2. Ejecuta:
-
-```bash
-cd /workspace/shadow-ai-diagnostic/radar_editorial_social
-./export_to_workspace.sh
-./publish_to_github.sh <URL_REPO_GITHUB>
-```
-
-Ejemplo de URL:
-
-- `git@github.com:tu-org/radar-editorial-social.git`
-- `https://github.com/tu-org/radar-editorial-social.git`
-
-> Nota: para que el push funcione, este equipo debe tener acceso a GitHub (SSH key o token).
+- Si una fuente externa falla temporalmente, la app muestra aviso y continúa con la otra.
